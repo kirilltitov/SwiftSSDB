@@ -206,7 +206,7 @@ open class SSDB {
         return self.connection!
     }
 
-    @discardableResult func send(
+    @discardableResult public func send(
         command: Data,
         to connection: TCPClient? = nil,
         description: String? = nil,
@@ -230,7 +230,7 @@ open class SSDB {
         }
     }
 
-    @discardableResult func send(command: Command, to connection: TCPClient? = nil) throws -> Response {
+    @discardableResult public func send(command: Command, to connection: TCPClient? = nil) throws -> Response {
         return try self.send(
             command: command.getCompiledPacket(),
             to: try connection ?? self.connect(),
@@ -239,7 +239,7 @@ open class SSDB {
         )
     }
 
-    func set(key: String, value: Data) throws {
+    public func set(key: String, value: Data) throws {
         try self.connect()
         let response = try self.send(command: .Set(key: key, value: value))
         guard response.isOK else {
@@ -247,17 +247,17 @@ open class SSDB {
         }
     }
 
-    func get(key: String) throws -> Data? {
+    public func get(key: String) throws -> Data? {
         try self.connect()
         return try self.send(command: .Get(key: key)).details.first
     }
 
-    func delete(key: String) throws {
+    public func delete(key: String) throws {
         try self.connect()
         try self.send(command: .Delete(key: key))
     }
 
-    func hashSet(name: String, key: String, value: Data) throws {
+    public func hashSet(name: String, key: String, value: Data) throws {
         try self.connect()
         let response = try self.send(command: .HashSet(name: name, key: key, value: value))
         guard response.isOK else {
@@ -265,17 +265,17 @@ open class SSDB {
         }
     }
 
-    func hashGet(name: String, key: String) throws -> Data? {
+    public func hashGet(name: String, key: String) throws -> Data? {
         try self.connect()
         return try self.send(command: .HashGet(name: name, key: key)).details.first
     }
 
-    func hashDelete(name: String, key: String) throws {
+    public func hashDelete(name: String, key: String) throws {
         try self.connect()
         try self.send(command: .HashDelete(name: name, key: key))
     }
 
-    func increment(key: String) throws -> Int {
+    public func increment(key: String) throws -> Int {
         try self.connect()
         let response = try self.send(command: .Increment(key: key))
         guard let result = response.details.first else {
