@@ -26,10 +26,15 @@ Don't forget to do/catch errors pls :) Using exclamation points is really bad pr
 
 ## FAQ
 *Q*: Why Data as value type? Why not String?
+
 *A*: Mainly because in SSDB all strings are binary safe. But secondly it's because I use SSDB to store binary data packed with MessagePack.
 
+
 *Q*: Why then keys are not Data?
+
 *A*: Now that is really exotic IMO :) No need, to be honest. Maybe once.
 
+
 *Q*: What about the rest of commands?
+
 *A*: One day, sure. For now I don't need anything else. But in case you *really* want to use unimplemented command, you may always call `SSDB.send(command: Data) throws -> SSDB.Response` method with help of `SSDB.Command.compile(blocks: [String]) -> Data` and manually handle the response.
