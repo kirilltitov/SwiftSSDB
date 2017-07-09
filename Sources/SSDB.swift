@@ -4,7 +4,7 @@ import Socks
 open class SSDB {
     typealias Bytes = [UInt8]
 
-    enum E: Error {
+    public enum E: Error {
         case ConnectError(String)
         case AuthError
         case NoAuthError
@@ -13,7 +13,7 @@ open class SSDB {
         case CommandError(String)
     }
 
-    enum Command {
+    public enum Command {
         case Auth(password: String)
         case Set(key: String, value: Data)
         case Get(key: String)
@@ -102,7 +102,7 @@ open class SSDB {
         }
     }
 
-    struct Response {
+    public struct Response {
         static let NEW_LINE: UInt8 = 10
 
         var status: String
@@ -166,7 +166,7 @@ open class SSDB {
     let keepAlive: Bool
     var connection: TCPClient? = nil
 
-    init(
+    public init(
         host: String,
         port: UInt16,
         password: String? = nil,
