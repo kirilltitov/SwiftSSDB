@@ -1,10 +1,11 @@
 import Foundation
-import Socks
+import Socket
 
 open class SSDB {
-    typealias Bytes = [UInt8]
+    public typealias Bytes = [UInt8]
 
     public enum E: Error {
+        case SocketError(String)
         case ConnectError(String)
         case AuthError
         case NoAuthError
@@ -22,8 +23,9 @@ open class SSDB {
         case HashGet(name: String, key: String)
         case HashDelete(name: String, key: String)
         case Increment(key: String)
+        case Info
 
-        func getCompiledPacket() -> Data {
+        public func getCompiledPacket() -> Data {
             var result = Data()
             switch self {
             case .Auth(let password):
@@ -55,11 +57,13 @@ open class SSDB {
                 result = Command.compile(blocks: ["hdel", name, key])
             case .Increment(let key):
                 result = Command.compile(blocks: ["incr", key])
+            case .Info:
+                result = Command.compile(blocks: ["info"])
             }
             return result
         }
 
-        func getDescription() -> String {
+        public func getDescription() -> String {
             var result = ""
             switch self {
             case .Auth(let password):
@@ -70,6 +74,8 @@ open class SSDB {
                 result = "get\n\(key)"
             case .Delete(let key):
                 result = "del\n\(key)"
+            case .Info:
+                result = "info"
             default:
                 break
             }
@@ -85,11 +91,11 @@ open class SSDB {
             }
         }
 
-        static func compile(blocks: [String]) -> Data {
+        public static func compile(blocks: [String]) -> Data {
             return Command.compile(blocks: blocks.map { $0.data(using: .utf8)! })
         }
 
-        static func compile(blocks: [Data]) -> Data {
+        public static func compile(blocks: [Data]) -> Data {
             var result = Data()
             let newLine = "\n".data(using: .utf8)!
             for block in blocks {
@@ -105,18 +111,18 @@ open class SSDB {
     public struct Response {
         static let NEW_LINE: UInt8 = 10
 
-        var status: String
-        var details: [Data]
-        var isOK: Bool {
+        public var status: String
+        public var details: [Data]
+        public var isOK: Bool {
             return self.status == "ok"
         }
 
-        init(status: String, details: [Data]) {
+        public init(status: String, details: [Data]) {
             self.status = status
             self.details = details
         }
 
-        init(_ data: Data) throws {
+        public init(_ data: Data) throws {
             let bytes = Bytes(data)
             guard bytes.count > 0 else {
                 throw E.ResponseError("Empty response")
@@ -127,28 +133,28 @@ open class SSDB {
             var result: [Data] = []
             var data = bytes
             while data.count != 1 && data[0] != Response.NEW_LINE {
-                guard let end = data.index(of: Response.NEW_LINE) else {
+                guard let sizeBlockPositionEnd = data.index(of: Response.NEW_LINE) else {
                     break
                 }
                 guard
-                    let blockSizeString = try? data.prefix(upTo: end).toString(),
+                    let blockSizeString = String(bytes: data.prefix(upTo: sizeBlockPositionEnd), encoding: .utf8),
                     let blockSize = Int(blockSizeString)
                 else {
                     throw E.ResponseError("Could not parse size (recieved bytes: \"\(bytes)\")")
                 }
                 var valueBytes: Bytes = []
-                let valueEnd: Int = end + blockSize
-                guard data[valueEnd + 1] == Response.NEW_LINE else {
+                let valueBlockPositionEnd: Int = sizeBlockPositionEnd + blockSize
+                guard data[valueBlockPositionEnd + 1] == Response.NEW_LINE else {
                     throw E.ResponseError("No newline at block end, invalid block format (recieved: \"\(bytes)\")")
                 }
-                for i in (end + 1)...valueEnd {
+                for i in (sizeBlockPositionEnd + 1)...valueBlockPositionEnd {
                     valueBytes.append(data[i])
                 }
                 result.append(Data(bytes:valueBytes))
-                if valueEnd + 2 == Int(Response.NEW_LINE) {
+                if data[valueBlockPositionEnd + 2] == Response.NEW_LINE {
                     break
                 }
-                data = Array(data.suffix(from: valueEnd + 2))
+                data = Array(data.suffix(from: valueBlockPositionEnd + 2))
             }
             guard result.count > 0 else {
                 throw E.ResponseError("Could not find status in response")
@@ -158,13 +164,20 @@ open class SSDB {
             }
             self.init(status: status, details: result)
         }
+
+        public func toString(as encoding: String.Encoding = .ascii) -> String {
+            return self.details
+                .map { String(data: $0, encoding: encoding) }
+                .flatMap { $0 }
+                .joined(separator: "\n")
+        }
     }
 
-    let host: String
-    let port: UInt16
-    let password: String?
-    let keepAlive: Bool
-    var connection: TCPClient? = nil
+    public let host: String
+    public let port: UInt16
+    public let password: String?
+    public let keepAlive: Bool
+    public var connection: Socket? = nil
 
     public init(
         host: String,
@@ -179,22 +192,16 @@ open class SSDB {
     }
 
     deinit {
-        try? self.connection?.close()
+        self.connection?.close()
     }
 
-    @discardableResult private func connect() throws -> TCPClient {
+    @discardableResult private func connect() throws -> Socket {
         if self.connection != nil {
             return self.connection!
         }
         do {
-            self.connection = try TCPClient(
-                address: InternetAddress(
-                    hostname: self.host,
-                    port: self.port
-                ),
-                connectionTimeout: 2
-            )
-            self.connection?.socket.keepAlive = self.keepAlive
+            self.connection = try Socket.create(family: .inet, type: .stream, proto: .tcp)
+            try self.connection!.connect(to: self.host, port: Int32(self.port))
             if let password = self.password {
                 guard try self.send(command: .Auth(password: password), to: self.connection!).isOK else {
                     throw E.AuthError
@@ -208,19 +215,23 @@ open class SSDB {
 
     @discardableResult public func send(
         command: Data,
-        to connection: TCPClient? = nil,
+        to connection: Socket? = nil,
         description: String? = nil,
         isAuth: Bool = false
     ) throws -> Response {
         let connection = try connection ?? self.connect()
         let description = description ?? String(data: command, encoding: .isoLatin1)!
         do {
-            try connection.send(bytes: Bytes(command))
+            guard try connection.write(from: command) > 0 else {
+                throw E.SendError("Zero bytes sent")
+            }
         } catch let error {
             throw E.SendError("Could not send command \"\(description)\" (error \"\(error)\")")
         }
         do {
-            let response = try Response(Data(bytes: try connection.receiveAll()))
+            var responseData = Data()
+            let _ = try connection.read(into: &responseData)
+            let response = try Response(responseData)
             if !isAuth && response.status == "noauth" {
                 throw E.NoAuthError
             }
@@ -230,7 +241,7 @@ open class SSDB {
         }
     }
 
-    @discardableResult public func send(command: Command, to connection: TCPClient? = nil) throws -> Response {
+    @discardableResult public func send(command: Command, to connection: Socket? = nil) throws -> Response {
         return try self.send(
             command: command.getCompiledPacket(),
             to: try connection ?? self.connect(),
@@ -250,6 +261,14 @@ open class SSDB {
     public func get(key: String) throws -> Data? {
         try self.connect()
         return try self.send(command: .Get(key: key)).details.first
+    }
+
+    public func get(key: String, encoding: String.Encoding = .ascii) throws -> String? {
+        try self.connect()
+        guard let result = try self.get(key: key) else {
+            return nil
+        }
+        return String(data: result, encoding: encoding)
     }
 
     public func delete(key: String) throws {
@@ -282,5 +301,10 @@ open class SSDB {
             throw E.CommandError("Could not increment key \"\(key)\" (response: \(response)")
         }
         return Int(String(data: result, encoding: .utf8)!)!
+    }
+
+    public func info() throws -> String {
+        try self.connect()
+        return try self.send(command: .Info).toString()
     }
 }
