@@ -1,7 +1,7 @@
 #  SSDB driver for Swift
 
 This is experimental package for communication with [SSDB](http://ssdb.io) database.
-This version currently supports just some basic commands: `auth`, `get`, `set`, `del`, `hset`, `hget`, `hdel` and `incr`.
+This version currently supports just some basic commands: `auth`, `info`, `get`, `set`, `del`, `hset`, `hget`, `hdel` and `incr`.
 
 ## Example usage:
 
