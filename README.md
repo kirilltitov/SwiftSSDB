@@ -11,8 +11,7 @@ import SSDB
 let db = SSDB(
     host: "127.0.0.1",
     port: 8888,
-    password: "passwd", // optional, no need to auth explicitly
-    keepAlive: true     // optional
+    password: "passwd" // optional, no need to auth explicitly
 )
 
 try! db.set(key: "foo", value: "bar".data(using: .utf8)!)
