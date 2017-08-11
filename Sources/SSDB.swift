@@ -123,6 +123,9 @@ open class SSDB {
         }
 
         public init(_ data: Data) throws {
+            guard data.count > 0 else {
+                throw E.ResponseError("Empty response")
+            }
             let bytes = Bytes(data)
             guard bytes.count > 0 else {
                 throw E.ResponseError("Empty response")
@@ -176,19 +179,19 @@ open class SSDB {
     public let host: String
     public let port: UInt16
     public let password: String?
-    public let keepAlive: Bool
+    public let timeout: UInt
     public var connection: Socket? = nil
 
     public init(
         host: String,
         port: UInt16,
         password: String? = nil,
-        keepAlive: Bool = true
+        timeout: UInt = 1000
     ) {
         self.host = host
         self.port = port
         self.password = password
-        self.keepAlive = keepAlive
+        self.timeout = timeout
     }
 
     deinit {
@@ -201,7 +204,9 @@ open class SSDB {
         }
         do {
             self.connection = try Socket.create(family: .inet, type: .stream, proto: .tcp)
-            try self.connection!.connect(to: self.host, port: Int32(self.port))
+            try self.connection!.connect(to: self.host, port: Int32(self.port), timeout: self.timeout)
+            try self.connection?.setReadTimeout(value: self.timeout)
+            try self.connection?.setWriteTimeout(value: self.timeout)
             if let password = self.password {
                 guard try self.send(command: .Auth(password: password), to: self.connection!).isOK else {
                     throw E.AuthError
@@ -251,7 +256,6 @@ open class SSDB {
     }
 
     public func set(key: String, value: Data) throws {
-        try self.connect()
         let response = try self.send(command: .Set(key: key, value: value))
         guard response.isOK else {
             throw E.CommandError("Could not set value by key \"\(key)\" (response: \(response))")
@@ -259,12 +263,10 @@ open class SSDB {
     }
 
     public func get(key: String) throws -> Data? {
-        try self.connect()
         return try self.send(command: .Get(key: key)).details.first
     }
 
     public func get(key: String, encoding: String.Encoding = .ascii) throws -> String? {
-        try self.connect()
         guard let result = try self.get(key: key) else {
             return nil
         }
@@ -272,12 +274,10 @@ open class SSDB {
     }
 
     public func delete(key: String) throws {
-        try self.connect()
         try self.send(command: .Delete(key: key))
     }
 
     public func hashSet(name: String, key: String, value: Data) throws {
-        try self.connect()
         let response = try self.send(command: .HashSet(name: name, key: key, value: value))
         guard response.isOK else {
             throw E.CommandError("Could not set has value by name \(name) and key \"\(key)\" (response: \(response))")
@@ -285,17 +285,14 @@ open class SSDB {
     }
 
     public func hashGet(name: String, key: String) throws -> Data? {
-        try self.connect()
         return try self.send(command: .HashGet(name: name, key: key)).details.first
     }
 
     public func hashDelete(name: String, key: String) throws {
-        try self.connect()
         try self.send(command: .HashDelete(name: name, key: key))
     }
 
     public func increment(key: String) throws -> Int {
-        try self.connect()
         let response = try self.send(command: .Increment(key: key))
         guard let result = response.details.first else {
             throw E.CommandError("Could not increment key \"\(key)\" (response: \(response)")
@@ -304,7 +301,6 @@ open class SSDB {
     }
 
     public func info() throws -> String {
-        try self.connect()
         return try self.send(command: .Info).toString()
     }
 }
