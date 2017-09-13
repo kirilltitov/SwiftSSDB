@@ -1,8 +1,12 @@
 import Foundation
 import Socket
 
-open class SSDB {
+public class SSDB {
     public typealias Bytes = [UInt8]
+
+    private enum Stage {
+        case Size, Payload
+    }
 
     public enum E: Error {
         case SocketError(String)
@@ -109,113 +113,80 @@ open class SSDB {
     }
 
     public struct Response {
-        static let NEW_LINE: UInt8 = 10
-
-        public var status: String
-        public var details: [Data]
+        public let status: String
+        public let payload: [Data]
+        public var result: Data? {
+            return payload.first
+        }
         public var isOK: Bool {
             return self.status == "ok"
         }
 
-        public init(status: String, details: [Data]) {
+        private init(status: String, payload: [Data]) {
             self.status = status
-            self.details = details
+            self.payload = payload
         }
 
-        public init(_ data: Data) throws {
-            guard data.count > 0 else {
+        init(from data: [Data]) throws {
+            guard let statusData = data.first else {
                 throw E.ResponseError("Empty response")
             }
-            let bytes = Bytes(data)
-            guard bytes.count > 0 else {
-                throw E.ResponseError("Empty response")
+            guard let status = String(data: statusData, encoding: .ascii) else {
+                throw E.ResponseError("Could not parse status from \(statusData)")
             }
-            guard bytes[bytes.count - 1] == Response.NEW_LINE, bytes[bytes.count - 2] == Response.NEW_LINE else {
-                throw E.ResponseError("Packet must end with two new lines (recieved bytes: \"\(bytes)\")")
-            }
-            var result: [Data] = []
-            var data = bytes
-            while data.count != 1 && data[0] != Response.NEW_LINE {
-                guard let sizeBlockPositionEnd = data.index(of: Response.NEW_LINE) else {
-                    break
-                }
-                guard
-                    let blockSizeString = String(bytes: data.prefix(upTo: sizeBlockPositionEnd), encoding: .utf8),
-                    let blockSize = Int(blockSizeString)
-                else {
-                    throw E.ResponseError("Could not parse size (recieved bytes: \"\(bytes)\")")
-                }
-                var valueBytes: Bytes = []
-                let valueBlockPositionEnd: Int = sizeBlockPositionEnd + blockSize
-                guard data[valueBlockPositionEnd + 1] == Response.NEW_LINE else {
-                    throw E.ResponseError("No newline at block end, invalid block format (recieved: \"\(bytes)\")")
-                }
-                for i in (sizeBlockPositionEnd + 1)...valueBlockPositionEnd {
-                    valueBytes.append(data[i])
-                }
-                result.append(Data(bytes:valueBytes))
-                if data[valueBlockPositionEnd + 2] == Response.NEW_LINE {
-                    break
-                }
-                data = Array(data.suffix(from: valueBlockPositionEnd + 2))
-            }
-            guard result.count > 0 else {
-                throw E.ResponseError("Could not find status in response")
-            }
-            guard let status = String(bytes: result.removeFirst(), encoding: .utf8) else {
-                throw E.ResponseError("Could not find status in response \"\(result)\"")
-            }
-            self.init(status: status, details: result)
+            self.init(
+                status: status,
+                payload: [Data](data.count > 1 ? data[1...] : [])
+            )
         }
 
         public func toString(as encoding: String.Encoding = .ascii) -> String {
-            return self.details
+            return self.payload
                 .map { String(data: $0, encoding: encoding) }
                 .flatMap { $0 }
                 .joined(separator: "\n")
         }
     }
 
+    private static let NEW_LINE: UInt8 = 10
+
     public let host: String
-    public let port: UInt16
+    public let port: UInt32
     public let password: String?
     public let timeout: UInt
-    public var connection: Socket? = nil
+    private var connection: Socket? = nil
+    private var stage: Stage = .Size
+    private var recvBuffer = Bytes()
+    private var response: [Data] = []
+    private var blockSize: Int = 0
+    private let queue = DispatchQueue(label: "com.ssdb", qos: .userInteractive)
 
-    public init(
-        host: String,
-        port: UInt16,
-        password: String? = nil,
-        timeout: UInt = 1000
-    ) {
+    public init(host: String, port: UInt32 = 8888, password: String? = nil, timeout: UInt = 1000) {
         self.host = host
         self.port = port
         self.password = password
         self.timeout = timeout
     }
 
-    deinit {
-        self.connection?.close()
-    }
-
-    @discardableResult private func connect() throws -> Socket {
-        if self.connection != nil {
-            return self.connection!
+    private func getConnection() throws -> Socket {
+        if let connection = self.connection {
+            return connection
         }
         do {
-            self.connection = try Socket.create(family: .inet, type: .stream, proto: .tcp)
-            try self.connection!.connect(to: self.host, port: Int32(self.port), timeout: self.timeout)
-            try self.connection?.setReadTimeout(value: self.timeout)
-            try self.connection?.setWriteTimeout(value: self.timeout)
+            let connection: Socket = try Socket.create(family: .inet, type: .stream, proto: .tcp)
+            try connection.setReadTimeout(value: self.timeout)
+            try connection.setWriteTimeout(value: self.timeout)
+            try connection.connect(to: self.host, port: Int32(self.port), timeout: self.timeout)
             if let password = self.password {
                 guard try self.send(command: .Auth(password: password), to: self.connection!).isOK else {
                     throw E.AuthError
                 }
             }
+            self.connection = connection
+            return connection
         } catch let error {
             throw E.ConnectError("Could not connect to \(self.host):\(self.port) \(error)")
         }
-        return self.connection!
     }
 
     @discardableResult public func send(
@@ -224,35 +195,87 @@ open class SSDB {
         description: String? = nil,
         isAuth: Bool = false
     ) throws -> Response {
-        let connection = try connection ?? self.connect()
-        let description = description ?? String(data: command, encoding: .isoLatin1)!
-        do {
-            guard try connection.write(from: command) > 0 else {
-                throw E.SendError("Zero bytes sent")
+        return try self.queue.sync {
+            let description = description ?? String(data: command, encoding: .isoLatin1)!
+            let socket = try connection ?? self.getConnection()
+            do {
+                guard try socket.write(from: command) > 0 else {
+                    throw E.SendError("Zero bytes sent")
+                }
+            } catch let error {
+                throw E.SendError("Could not send command \"\(description)\" (error \"\(error)\")")
             }
-        } catch let error {
-            throw E.SendError("Could not send command \"\(description)\" (error \"\(error)\")")
-        }
-        do {
-            var responseData = Data()
-            let _ = try connection.read(into: &responseData)
-            let response = try Response(responseData)
-            if !isAuth && response.status == "noauth" {
-                throw E.NoAuthError
+            do {
+                let response = try self.read(from: socket)
+                if !isAuth && response.status == "noauth" {
+                    throw E.NoAuthError
+                }
+                return response
+            } catch let error {
+                throw E.ResponseError("Could not receive result for command \"\(description)\" (error \"\(error)\")")
             }
-            return response
-        } catch let error {
-            throw E.ResponseError("Could not receive result for command \"\(description)\" (error \"\(error)\")")
         }
     }
 
     @discardableResult public func send(command: Command, to connection: Socket? = nil) throws -> Response {
         return try self.send(
             command: command.getCompiledPacket(),
-            to: try connection ?? self.connect(),
+            to: connection,
             description: command.getDescription(),
             isAuth: command.isAuth()
         )
+    }
+
+    private func read(from socket: Socket) throws -> Response {
+        self.stage = .Size
+        while true {
+            if let result = self.parse() {
+                return try Response(from: result)
+            }
+            var data: Data = Data()
+            let _ = try socket.read(into: &data)
+            self.recvBuffer.append(contentsOf: Bytes(data))
+        }
+    }
+
+    private func parse() -> [Data]? {
+        var left = 0, right = 0
+        let bufferSize = self.recvBuffer.count
+        loop: while true {
+            left = right
+            switch self.stage {
+            case .Size:
+                guard let index = self.recvBuffer[left...].index(of: SSDB.NEW_LINE) else {
+                    break loop
+                }
+                right = index
+                right += 1
+                let line = self.recvBuffer[left ..< (right - 1)]
+                left = right
+                if line.count == 0 {
+                    self.recvBuffer = Bytes(self.recvBuffer[left...])
+                    let result = self.response
+                    self.response = []
+                    return result
+                }
+                self.blockSize = Int(String(bytes: line, encoding: .ascii)!.trimmingCharacters(in: .whitespacesAndNewlines))!
+                self.stage = .Payload
+                fallthrough
+            case .Payload:
+                right = left + self.blockSize
+                if right <= bufferSize, let n = self.recvBuffer[right...].index(of: SSDB.NEW_LINE) {
+                    self.response.append(Data(bytes: self.recvBuffer[left ..< right]))
+                    right = n + 1
+                    self.stage = .Size
+                    continue loop
+                }
+                break loop
+            }
+        }
+        if left > 0 {
+            self.recvBuffer = Bytes(self.recvBuffer[left...])
+        }
+        return nil
     }
 
     public func set(key: String, value: Data) throws {
@@ -263,7 +286,7 @@ open class SSDB {
     }
 
     public func get(key: String) throws -> Data? {
-        return try self.send(command: .Get(key: key)).details.first
+        return try self.send(command: .Get(key: key)).result
     }
 
     public func get(key: String, encoding: String.Encoding = .ascii) throws -> String? {
@@ -285,7 +308,7 @@ open class SSDB {
     }
 
     public func hashGet(name: String, key: String) throws -> Data? {
-        return try self.send(command: .HashGet(name: name, key: key)).details.first
+        return try self.send(command: .HashGet(name: name, key: key)).result
     }
 
     public func hashDelete(name: String, key: String) throws {
@@ -294,7 +317,7 @@ open class SSDB {
 
     public func increment(key: String) throws -> Int {
         let response = try self.send(command: .Increment(key: key))
-        guard let result = response.details.first else {
+        guard let result = response.result else {
             throw E.CommandError("Could not increment key \"\(key)\" (response: \(response)")
         }
         return Int(String(data: result, encoding: .utf8)!)!
@@ -304,3 +327,4 @@ open class SSDB {
         return try self.send(command: .Info).toString()
     }
 }
+
