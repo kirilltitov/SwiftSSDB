@@ -5,6 +5,6 @@ import PackageDescription
 let package = Package(
     name: "SSDB",
     dependencies: [
-        .Package(url: "https://github.com/IBM-Swift/BlueSocket", majorVersion: 0)
+        .Package(url: "https://github.com/IBM-Swift/BlueSocket.git", majorVersion: 0)
     ]
 )
