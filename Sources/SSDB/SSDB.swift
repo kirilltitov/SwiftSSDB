@@ -26,6 +26,7 @@ public class SSDB {
         case HashSet(name: String, key: String, value: Data)
         case HashGet(name: String, key: String)
         case HashDelete(name: String, key: String)
+        case HashSize(name: String)
         case Increment(key: String)
         case Info
 
@@ -59,6 +60,8 @@ public class SSDB {
                 result = Command.compile(blocks: ["hget", name, key])
             case .HashDelete(let name, let key):
                 result = Command.compile(blocks: ["hdel", name, key])
+            case .HashSize(let name):
+                result = Command.compile(blocks: ["hsize", name])
             case .Increment(let key):
                 result = Command.compile(blocks: ["incr", key])
             case .Info:
@@ -313,6 +316,17 @@ public class SSDB {
 
     public func hashDelete(name: String, key: String) throws {
         try self.send(command: .HashDelete(name: name, key: key))
+    }
+
+    public func hashSize(name: String) throws -> Int {
+        let result = try self.send(command: .HashSize(name: name))
+        guard let res = result.result, let string = String(data: res, encoding: .ascii) else {
+            throw E.ResponseError("Could not get string from result")
+        }
+        guard let int = Int(string) else {
+            throw E.ResponseError("Could not convert string \(string) to int")
+        }
+        return int
     }
 
     public func increment(key: String) throws -> Int {
