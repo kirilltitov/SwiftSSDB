@@ -146,7 +146,7 @@ public class SSDB {
         public func toString(as encoding: String.Encoding = .ascii) -> String {
             return self.payload
                 .map { String(data: $0, encoding: encoding) }
-                .flatMap { $0 }
+                .compactMap { $0 }
                 .joined(separator: "\n")
         }
     }
