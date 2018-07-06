@@ -5,7 +5,7 @@ This version currently supports just some basic commands: `auth`, `info`, `get`,
 
 ## Example usage:
 
-```
+```swift
 import SSDB
 
 let db = SSDB(
