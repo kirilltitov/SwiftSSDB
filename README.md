@@ -14,9 +14,9 @@ let db = SSDB(
     password: "passwd" // optional, no need to auth explicitly
 )
 
-try! db.set(key: "foo", value: "bar".data(using: .utf8)!)
-if let result: Data = try! db.get(key: "foo") {
-    print(String(data: result, encoding: .utf8)!)
+try db.set(key: "foo", value: "bar".data(using: .utf8)!)
+if let result: Data = try db.get(key: "foo") {
+    print(String(data: result, encoding: .utf8))
 }
 
 ```
